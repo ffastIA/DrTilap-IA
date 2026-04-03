@@ -3,15 +3,14 @@ import httpx
 import logging
 from typing import List, Tuple
 
-# Configurações Globais
 BACKEND_URL = "http://localhost:8080"
 logger = logging.getLogger(__name__)
 
 class State(rx.State):
-    # --- VARIÁVEIS DE ESTADO ---
     user_email: str = ""
     password: str = ""
     user_name: str = "Usuário"
+    user_role: str = rx.LocalStorage("user")
     access_token: str = rx.LocalStorage("")
     is_authenticated: bool = False
     current_message: str = ""
@@ -19,45 +18,38 @@ class State(rx.State):
     is_loading: bool = False
     error_message: str = ""
 
-    # --- SETTERS EXPLÍCITOS (Resolve os DeprecationWarnings) ---
+    # Setters explícitos para evitar DeprecationWarnings
     def set_user_email(self, val: str): self.user_email = val
     def set_password(self, val: str): self.password = val
     def set_current_message(self, val: str): self.current_message = val
 
-    # --- LÓGICA DE NAVEGAÇÃO ---
     def check_login(self):
-        if not self.access_token:
-            return rx.redirect("/login")
+        if not self.access_token: return rx.redirect("/login")
         self.is_authenticated = True
 
     def logout(self):
         self.access_token = ""
         self.is_authenticated = False
+        self.user_role = "user"
         return rx.redirect("/")
 
-    # --- AÇÕES ASSÍNCRONAS ---
     async def handle_login(self):
         self.is_loading = True
-        self.error_message = ""
         try:
             async with httpx.AsyncClient() as client:
-                res = await client.post(
-                    f"{BACKEND_URL}/auth/login",
-                    json={"email": self.user_email, "password": self.password},
-                    timeout=10.0
-                )
+                res = await client.post(f"{BACKEND_URL}/auth/login", json={"email": self.user_email, "password": self.password})
                 if res.status_code == 200:
                     data = res.json()
                     self.access_token = data["access_token"]
                     self.user_name = data["user_name"]
+                    self.user_role = data["user_role"]
                     return rx.redirect("/hub")
-                self.error_message = "E-mail ou senha incorretos."
-        except Exception as e:
-            self.error_message = "Erro de conexão com o servidor."
-        finally:
-            self.is_loading = False
+                self.error_message = "Credenciais inválidas."
+        except: self.error_message = "Erro de conexão."
+        finally: self.is_loading = False
 
     async def handle_chat(self):
+        """Método que estava faltando ou com erro de referência."""
         if not self.current_message: return
         msg = self.current_message
         self.chat_history.append((msg, ""))
@@ -73,34 +65,27 @@ class State(rx.State):
                 )
                 self.chat_history[-1] = (msg, res.json().get("answer", "Sem resposta."))
         except:
-            self.chat_history[-1] = (msg, "Erro ao consultar IA.")
-        finally:
-            self.is_loading = False
+            self.chat_history[-1] = (msg, "Erro na conexão com a IA.")
+        finally: self.is_loading = False
 
     async def handle_upload(self, files: List[rx.UploadFile]):
-        """Upload de arquivos para o backend."""
         self.is_loading = True
         try:
-            for file in files:
-                upload_data = await file.read()
-                async with httpx.AsyncClient() as client:
-                    headers = {"Authorization": f"Bearer {self.access_token}"}
-                    files_payload = {"file": (file.filename, upload_data, "application/pdf")}
-                    await client.post(f"{BACKEND_URL}/admin/upload", files=files_payload, headers=headers)
-            return rx.window_alert("Upload concluído!")
-        except Exception as e:
-            logger.error(f"Erro no upload: {e}")
-        finally:
-            self.is_loading = False
+            async with httpx.AsyncClient() as client:
+                headers = {"Authorization": f"Bearer {self.access_token}"}
+                for file in files:
+                    content = await file.read()
+                    await client.post(f"{BACKEND_URL}/admin/upload", files={"file": (file.filename, content)}, headers=headers)
+            return [rx.window_alert("Upload concluído!"), rx.clear_selected_files("upload_manual")]
+        except: return rx.window_alert("Falha no upload.")
+        finally: self.is_loading = False
 
     async def handle_reindex(self):
         self.is_loading = True
         try:
-            headers = {"Authorization": f"Bearer {self.access_token}"}
             async with httpx.AsyncClient() as client:
-                await client.post(f"{BACKEND_URL}/admin/reindex", headers=headers, timeout=120.0)
-            return rx.window_alert("Base reindexada!")
-        except:
-            pass
-        finally:
-            self.is_loading = False
+                headers = {"Authorization": f"Bearer {self.access_token}"}
+                await client.post(f"{BACKEND_URL}/admin/reindex", headers=headers)
+            return rx.window_alert("Reindexado!")
+        except: pass
+        finally: self.is_loading = False
